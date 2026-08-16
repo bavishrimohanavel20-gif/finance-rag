@@ -1,0 +1,8 @@
+streamlit
+chromadb
+ollama
+pypdf
+pdfplumber
+pandas
+plotly
+reportlab
