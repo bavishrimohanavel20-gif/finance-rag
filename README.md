@@ -4,7 +4,7 @@ An AI-powered financial intelligence application that allows users to ask questi
 
 🚀 Live Demo
 
-👉 [Open Finance RAG](YOUR-STREAMLIT-URL)
+👉 https://finance-rag-j9z7yxvk75h67nghrlfxu4.streamlit.app/
 
  📌 Project Overview
 
