@@ -327,17 +327,7 @@ def run_rag(question: str) -> None:
         st.session_state.current = result
         return
 
-    chunk_count, _ = get_indexed_chunk_count()
-    if not chunk_count:
-        result = {
-            "question": question,
-            "answer": "",
-            "sources": [],
-            "error": "Please index the documents before asking a question.",
-            "timestamp": datetime.now().strftime("%H:%M:%S"),
-        }
-        st.session_state.current = result
-        return
+    
 
     if not os.path.exists(RAG_SCRIPT):
         result = {
@@ -809,7 +799,6 @@ with btn_col1:
     ask_clicked = st.button(
         "🔎 Ask Financial Assistant",
         use_container_width=True,
-        disabled=not is_indexed,
     )
 with btn_col2:
     clear_clicked = st.button("🗑️ Clear History", use_container_width=True)

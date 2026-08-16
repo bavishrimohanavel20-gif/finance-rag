@@ -1,15 +1,26 @@
 import re
 from pathlib import Path
 
-import chromadb
-import ollama
+from pypdf import PdfReader
 
-from financial_extractor import get_financial_data
+# Ollama is optional.
+# It will work locally if Ollama is available.
+try:
+    import chromadb
+except Exception:
+    chromadb = None
+
+try:
+    import ollama
+except Exception:
+    ollama = None
 
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
+
+DATA_FOLDER = Path("data")
 
 CHROMA_FOLDER = "chroma_db"
 
@@ -21,126 +32,97 @@ LLM_MODEL = "qwen2.5:3b"
 
 
 # ============================================================
-# CONNECT TO CHROMADB
+# QUARTER FILES
 # ============================================================
 
-client = chromadb.PersistentClient(
-    path=CHROMA_FOLDER
-)
-
-collection = client.get_collection(
-    name=COLLECTION_NAME
-)
+QUARTER_FILES = {
+    "Q1 FY26": "Infosys_Q1_FY26.pdf",
+    "Q2 FY26": "Infosys_Q2_FY26.pdf",
+    "Q3 FY26": "Infosys_Q3_FY26.pdf",
+    "Q4 FY26": "Infosys_Q4_FY26.pdf",
+}
 
 
 # ============================================================
-# DETECT QUARTER
+# QUARTER DETECTION
 # ============================================================
 
 def detect_quarter(question):
 
-    question_upper = question.upper()
+    q = question.upper()
 
-    # Q1 FY26 / Q1FY26
+    # Q1 FY26
     match = re.search(
         r"\bQ([1-4])\s*FY\s*26\b",
-        question_upper
+        q
     )
 
     if match:
-        return (
-            "Q"
-            + match.group(1)
-            + " FY26"
-        )
+        return f"Q{match.group(1)} FY26"
 
     # Q1 / Q2 / Q3 / Q4
     match = re.search(
         r"\bQ([1-4])\b",
-        question_upper
+        q
     )
 
     if match:
-        return (
-            "Q"
-            + match.group(1)
-            + " FY26"
-        )
+        return f"Q{match.group(1)} FY26"
 
-    # Latest quarter = Q4 FY26
-    if "LATEST QUARTER" in question_upper or "LATEST" in question_upper:
+    # Latest quarter
+    if (
+        "LATEST QUARTER" in q
+        or "LATEST" in q
+        or "MOST RECENT QUARTER" in q
+        or "RECENT QUARTER" in q
+    ):
         return "Q4 FY26"
 
     return None
 
+
 # ============================================================
-# DETECT METRIC
+# METRIC DETECTION
 # ============================================================
 
 def detect_metric(question):
 
     q = question.lower()
 
-    # Check more specific phrases first
-
     if "operating margin" in q:
-
         return "operating margin"
 
     if "operating profit" in q:
-
         return "operating profit"
 
     if "net profit" in q:
-
         return "net profit"
 
-    if "revenue" in q or "revenues" in q:
-
-        return "revenue"
-
     if "free cash flow" in q:
-
         return "free cash flow"
 
-    if "basic eps" in q:
-
+    if "diluted eps" in q:
         return "eps"
 
-    if "diluted eps" in q:
-
+    if "basic eps" in q:
         return "eps"
 
     if "eps" in q:
-
         return "eps"
+
+    if "revenue" in q or "revenues" in q:
+        return "revenue"
 
     return None
 
 
 # ============================================================
-# DETECT WHETHER QUESTION IS ABOUT INFOSYS
+# COMPANY CHECK
 # ============================================================
 
 def is_infosys_question(question):
 
     q = question.lower()
-
-    infosys_words = [
-        "infosys",
-        "infy"
-    ]
-
-    # If Infosys is explicitly mentioned
-    for word in infosys_words:
-
-        if word in q:
-
-            return True
-
-    # If no other company is mentioned,
-    # assume the question refers to the
-    # supplied Infosys financial reports.
 
     other_companies = [
         "apple",
@@ -159,134 +141,205 @@ def is_infosys_question(question):
     for company in other_companies:
 
         if company in q:
-
             return False
 
     return True
 
 
 # ============================================================
-# GET PDF PATH
+# PDF PATH
 # ============================================================
 
 def get_pdf_path(quarter):
 
-    if not quarter:
+    filename = QUARTER_FILES.get(quarter)
 
+    if not filename:
         return None
 
-    filename = (
-        "Infosys_"
-        + quarter.replace(" ", "_")
-        + ".pdf"
-    )
-
-    path = (
-        Path("data")
-        / filename
-    )
+    path = DATA_FOLDER / filename
 
     if path.exists():
-
         return path
 
     return None
 
 
 # ============================================================
-# GET DIRECT FINANCIAL ANSWER
+# READ PDF
 # ============================================================
 
-def get_direct_financial_answer(
+def read_pdf(pdf_path):
+
+    try:
+
+        reader = PdfReader(str(pdf_path))
+
+        pages = []
+
+        for page_number, page in enumerate(
+            reader.pages,
+            start=1
+        ):
+
+            text = page.extract_text()
+
+            if text:
+
+                pages.append({
+                    "page": page_number,
+                    "text": text
+                })
+
+        return pages
+
+    except Exception:
+
+        return []
+
+
+# ============================================================
+# NORMALIZE TEXT
+# ============================================================
+
+def clean_number(value):
+
+    if value is None:
+        return None
+
+    value = value.replace(",", "")
+    value = value.replace("₹", "")
+    value = value.strip()
+
+    try:
+        return float(value)
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# EXTRACT FINANCIAL VALUE FROM PDF
+# ============================================================
+
+def extract_metric_from_pdf(
     quarter,
     metric
 ):
 
-    if not quarter or not metric:
-
-        return None, None
-
-
-    # We currently have exact extraction
-    # for these metrics.
-
-    supported_metrics = [
-        "revenue",
-        "operating profit",
-        "operating margin",
-        "net profit"
-    ]
-
-    if metric not in supported_metrics:
-
-        return None, None
-
-
-    pdf_path = get_pdf_path(
-        quarter
-    )
+    pdf_path = get_pdf_path(quarter)
 
     if not pdf_path:
-
         return None, None
 
+    pages = read_pdf(pdf_path)
 
-    page, financial_data = (
-        get_financial_data(
-            pdf_path
+    if not pages:
+        return None, None
+
+    # --------------------------------------------------------
+    # First try the existing financial_extractor.
+    # --------------------------------------------------------
+
+    try:
+
+        from financial_extractor import get_financial_data
+
+        page, financial_data = (
+            get_financial_data(
+                str(pdf_path)
+            )
         )
-    )
+
+        if financial_data:
+
+            metric_map = {
+
+                "revenue":
+                    "Revenues",
+
+                "operating profit":
+                    "Operating Profit",
+
+                "operating margin":
+                    "Operating Margin %",
+
+                "net profit":
+                    "Net Profit (after non-controlling interests)"
+
+            }
+
+            key = metric_map.get(metric)
+
+            if key:
+
+                value = financial_data.get(key)
+
+                if value is not None:
+
+                    return value, page
+
+    except Exception:
+        pass
 
 
-    if not financial_data:
+    # --------------------------------------------------------
+    # PDF text fallback
+    # --------------------------------------------------------
 
-        return None, None
+    patterns = {
 
+        "revenue": [
+            r"Revenues?\s*[:\-]?\s*₹?\s*([\d,]+)",
+            r"Revenue\s*[:\-]?\s*₹?\s*([\d,]+)"
+        ],
 
-    metric_map = {
+        "operating profit": [
+            r"Operating Profit\s*[:\-]?\s*₹?\s*([\d,]+)"
+        ],
 
-        "revenue":
-            "Revenues",
+        "operating margin": [
+            r"Operating Margin\s*[:\-]?\s*([\d.]+)\s*%"
+        ],
 
-        "operating profit":
-            "Operating Profit",
+        "net profit": [
+            r"Net Profit.*?[:\-]?\s*₹?\s*([\d,]+)"
+        ]
 
-        "operating margin":
-            "Operating Margin %",
-
-        "net profit":
-            "Net Profit (after non-controlling interests)"
     }
 
+    metric_patterns = patterns.get(metric, [])
 
-    label = metric_map.get(
-        metric
-    )
+    for page_data in pages:
 
+        text = page_data["text"]
 
-    if not label:
+        for pattern in metric_patterns:
 
-        return None, None
+            match = re.search(
+                pattern,
+                text,
+                re.IGNORECASE
+            )
 
+            if match:
 
-    value = financial_data.get(
-        label
-    )
+                value = match.group(1)
 
+                value = clean_number(value)
 
-    if value is None:
+                if value is not None:
 
-        return None, None
+                    return value, page_data["page"]
 
-
-    return value, page
+    return None, None
 
 
 # ============================================================
-# FORMAT DIRECT ANSWER
+# FORMAT ANSWER
 # ============================================================
 
-def format_direct_answer(
+def format_answer(
     metric,
     value
 ):
@@ -294,17 +347,15 @@ def format_direct_answer(
     if metric == "revenue":
 
         return (
-            f"Revenue: ₹{value} crore"
+            f"Revenue: ₹{value:,.0f} crore"
         )
-
 
     if metric == "operating profit":
 
         return (
             f"Operating Profit: "
-            f"₹{value} crore"
+            f"₹{value:,.0f} crore"
         )
-
 
     if metric == "operating margin":
 
@@ -312,32 +363,28 @@ def format_direct_answer(
             f"Operating Margin: {value}%"
         )
 
-
     if metric == "net profit":
 
         return (
-            "Net Profit "
-            "(after non-controlling interests): "
-            f"₹{value} crore"
+            "Net Profit: "
+            f"₹{value:,.0f} crore"
         )
-
 
     return str(value)
 
 
 # ============================================================
-# PRINT DIRECT SOURCES
+# PRINT SOURCE
 # ============================================================
 
-def print_direct_source(
+def print_source(
     quarter,
     page
 ):
 
-    filename = (
-        "Infosys_"
-        + quarter.replace(" ", "_")
-        + ".pdf"
+    filename = QUARTER_FILES.get(
+        quarter,
+        "Unknown"
     )
 
     print(
@@ -346,25 +393,33 @@ def print_direct_source(
 
 
 # ============================================================
-# CREATE QUESTION EMBEDDING
+# LOCAL OLLAMA EMBEDDING
 # ============================================================
 
-def create_question_embedding(
-    question
-):
+def create_question_embedding(question):
 
-    response = ollama.embed(
+    if ollama is None:
 
-        model=EMBEDDING_MODEL,
+        return None
 
-        input=question
-    )
+    try:
 
-    return response.embeddings[0]
+        response = ollama.embed(
+
+            model=EMBEDDING_MODEL,
+
+            input=question
+        )
+
+        return response.embeddings[0]
+
+    except Exception:
+
+        return None
 
 
 # ============================================================
-# RETRIEVE DOCUMENTS
+# LOCAL CHROMA RETRIEVAL
 # ============================================================
 
 def retrieve_documents(
@@ -372,264 +427,190 @@ def retrieve_documents(
     quarter=None
 ):
 
-    question_embedding = (
-        create_question_embedding(
-            question
-        )
-    )
-
-
-    # --------------------------------------------------------
-    # Quarter-specific retrieval
-    # --------------------------------------------------------
-
-    if quarter:
-
-        results = collection.query(
-
-            query_embeddings=[
-                question_embedding
-            ],
-
-            n_results=5,
-
-            where={
-                "quarter": quarter
-            }
-        )
-
-    else:
-
-        results = collection.query(
-
-            query_embeddings=[
-                question_embedding
-            ],
-
-            n_results=5
-        )
-
-
-    return results
-
-
-# ============================================================
-# BUILD CONTEXT
-# ============================================================
-
-def build_context(
-    results
-):
-
-    documents = (
-        results.get(
-            "documents",
-            [[]]
-        )[0]
-    )
-
-    metadatas = (
-        results.get(
-            "metadatas",
-            [[]]
-        )[0]
-    )
-
-
-    context_parts = []
-
-
-    for document, metadata in zip(
-        documents,
-        metadatas
+    if (
+        chromadb is None
+        or ollama is None
     ):
 
-        context_parts.append(
+        return None
 
-            f"""
-SOURCE: {metadata.get("source")}
-PAGE: {metadata.get("page")}
-QUARTER: {metadata.get("quarter")}
+    try:
 
-DOCUMENT:
-{document}
-"""
+        client = chromadb.PersistentClient(
+            path=CHROMA_FOLDER
         )
 
+        collection = client.get_collection(
+            name=COLLECTION_NAME
+        )
 
-    return (
-        "\n".join(
-            context_parts
-        ),
-        metadatas
-    )
+        embedding = (
+            create_question_embedding(
+                question
+            )
+        )
+
+        if embedding is None:
+            return None
+
+        if quarter:
+
+            results = collection.query(
+
+                query_embeddings=[
+                    embedding
+                ],
+
+                n_results=5,
+
+                where={
+                    "quarter": quarter
+                }
+            )
+
+        else:
+
+            results = collection.query(
+
+                query_embeddings=[
+                    embedding
+                ],
+
+                n_results=5
+            )
+
+        return results
+
+    except Exception:
+
+        return None
 
 
 # ============================================================
-# LLM ANSWER
+# OLLAMA ANSWER
 # ============================================================
 
-def generate_rag_answer(
+def generate_ollama_answer(
     question,
-    quarter,
-    metric,
     context
 ):
 
-    prompt = f"""
-You are a financial-report question answering assistant.
+    if ollama is None:
+        return None
 
-You must answer ONLY from the supplied Infosys
-financial report context.
+    try:
+
+        prompt = f"""
+You are an Infosys financial report assistant.
+
+Answer ONLY using the supplied document context.
+
+Do not use outside knowledge.
+
+Do not guess.
+
+If the answer is not present, say:
+
+I could not find this information in the provided documents.
 
 USER QUESTION:
 {question}
 
-DETECTED QUARTER:
-{quarter}
-
-DETECTED METRIC:
-{metric}
-
 DOCUMENT CONTEXT:
 {context}
 
-
-IMPORTANT RULES:
-
-1. Answer only from the supplied documents.
-
-2. Do not use outside knowledge.
-
-3. Do not guess.
-
-4. Do not invent information.
-
-5. If the requested information is not present,
-   say exactly:
-
-   I could not find this information in the provided documents.
-
-6. If a financial metric is requested, identify
-   the exact metric before answering.
-
-7. Never confuse:
-
-   Revenue
-   Revenue Growth
-   Client contribution to revenue
-   Operating Profit
-   Operating Margin
-   Net Profit
-   EPS
-   Free Cash Flow
-   Number of Clients
-
-8. If the question asks about a company that is not
-   present in the documents, say:
-
-   I could not find this information in the provided documents.
-
-9. Do not answer an Apple question using Infosys data.
-
-10. Preserve the units given in the document.
-
-11. For Indian financial statements, use ₹ crore
-    when the source uses ₹ crore.
-
-12. Give a short answer.
-
-13. Include the metric name and value when possible.
-
-14. Never use placeholders such as XX%, XXX,
-    or unknown numerical values.
-
-15. Do not calculate a value unless the question
-    explicitly requires calculation.
-
-16. If the context does not contain enough information,
-    use the exact "could not find" response.
-
-FINAL ANSWER:
+Give a short answer with the exact financial value and unit when available.
 """
 
+        response = ollama.chat(
 
-    response = ollama.chat(
+            model=LLM_MODEL,
 
-        model=LLM_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
 
-        messages=[
+        return response[
+            "message"
+        ][
+            "content"
+        ].strip()
 
-            {
-                "role": "user",
-                "content": prompt
-            }
+    except Exception:
 
-        ]
-    )
-
-
-    return response[
-        "message"
-    ][
-        "content"
-    ].strip()
+        return None
 
 
 # ============================================================
-# PRINT RAG SOURCES
+# MULTI-QUARTER ANSWER
 # ============================================================
 
-def print_rag_sources(
-    metadatas
+def multi_quarter_answer(
+    question,
+    metric
 ):
 
     print(
         "\n================================"
     )
 
-    print(
-        "SOURCES"
-    )
+    print("ANSWER")
 
     print(
         "================================"
     )
 
+    found = False
 
-    seen = set()
+    for quarter in [
+        "Q1 FY26",
+        "Q2 FY26",
+        "Q3 FY26",
+        "Q4 FY26"
+    ]:
 
-
-    for metadata in metadatas:
-
-        source = metadata.get(
-            "source"
+        value, page = (
+            extract_metric_from_pdf(
+                quarter,
+                metric
+            )
         )
 
-        page = metadata.get(
-            "page"
-        )
+        if value is not None:
 
+            found = True
 
-        key = (
-            source,
-            page
-        )
+            print(
+                f"{quarter}: "
+                f"{format_answer(metric, value)}"
+            )
 
+            print(
+                f"Source: "
+                f"{QUARTER_FILES[quarter]} "
+                f"— Page {page}"
+            )
 
-        if key in seen:
-
-            continue
-
+    if not found:
 
         print(
-            f"- {source} — Page {page}"
+            "I could not find this information "
+            "in the provided documents."
         )
 
+    print(
+        "\n================================"
+    )
 
-        seen.add(
-            key
-        )
+    print("SOURCES")
+
+    print(
+        "================================"
+    )
 
 
 # ============================================================
@@ -642,19 +623,48 @@ def main():
         "\nAsk your question: "
     ).strip()
 
-
     if not question:
 
         print(
-            "\nPlease enter a question."
+            "Please enter a question."
         )
 
         return
 
 
     # --------------------------------------------------------
-    # Detect quarter and metric
+    # Company validation
     # --------------------------------------------------------
+
+    if not is_infosys_question(question):
+
+        print(
+            "\n================================"
+        )
+
+        print("ANSWER")
+
+        print(
+            "================================"
+        )
+
+        print(
+            "I could not find this information "
+            "in the provided documents."
+        )
+
+        print(
+            "\n================================"
+        )
+
+        print("SOURCES")
+
+        print(
+            "================================"
+        )
+
+        return
+
 
     quarter = detect_quarter(
         question
@@ -677,161 +687,88 @@ def main():
 
 
     # --------------------------------------------------------
-    # Check company
+    # Multi-quarter questions
     # --------------------------------------------------------
 
-    if not is_infosys_question(
-        question
-    ):
-
-        print(
-            "\n================================"
-        )
-
-        print(
-            "ANSWER"
-        )
-
-        print(
-            "================================"
-        )
-
-        print(
-            "I could not find this information "
-            "in the provided documents."
-        )
-
-        print(
-            "\n================================"
-        )
-
-        print(
-            "SOURCES"
-        )
-
-        print(
-            "================================"
-        )
-
-        return
-
-# --------------------------------------------------------
-    # MULTI-QUARTER FINANCIAL COMPARISON
-    # --------------------------------------------------------
+    q_lower = question.lower()
 
     if (
         quarter is None
-        and metric in [
-            "revenue",
-            "operating profit",
-            "operating margin",
-            "net profit"
-        ]
+        and metric
         and (
-            "across the four quarters" in question.lower()
-            or "four quarters" in question.lower()
-            or "trend" in question.lower()
+            "four quarters" in q_lower
+            or "across the quarters" in q_lower
+            or "across all quarters" in q_lower
+            or "quarterly trend" in q_lower
+            or "trend across" in q_lower
         )
     ):
 
-        print(
-            "\n================================"
+        multi_quarter_answer(
+            question,
+            metric
         )
 
-        print(
-            "ANSWER"
+        return
+
+
+    # --------------------------------------------------------
+    # Direct financial extraction
+    # --------------------------------------------------------
+
+    if quarter and metric in [
+        "revenue",
+        "operating profit",
+        "operating margin",
+        "net profit"
+    ]:
+
+        value, page = (
+            extract_metric_from_pdf(
+                quarter,
+                metric
+            )
         )
 
-        print(
-            "================================"
-        )
+        if value is not None:
 
-        for q in [
-            "Q1 FY26",
-            "Q2 FY26",
-            "Q3 FY26",
-            "Q4 FY26"
-        ]:
+            print(
+                "\n================================"
+            )
 
-            value, page = (
-                get_direct_financial_answer(
-                    q,
-                    metric
+            print("ANSWER")
+
+            print(
+                "================================"
+            )
+
+            print(
+                format_answer(
+                    metric,
+                    value
                 )
             )
 
-            if value is not None:
+            print(
+                "\n================================"
+            )
 
-                print(
-                    f"{q}: {format_direct_answer(metric, value)}"
-                )
+            print("SOURCES")
 
-                print(
-                    f"Source: Infosys_"
-                    f"{q.replace(' ', '_')}.pdf"
-                    f" — Page {page}"
-                )
+            print(
+                "================================"
+            )
 
-        return
-    # --------------------------------------------------------
-    # EXACT FINANCIAL ANSWER
-    # --------------------------------------------------------
+            print_source(
+                quarter,
+                page
+            )
 
-    direct_value, direct_page = (
-        get_direct_financial_answer(
-            quarter,
-            metric
-        )
-    )
-
-
-    if direct_value is not None:
-
-        answer = format_direct_answer(
-            metric,
-            direct_value
-        )
-
-
-        print(
-            "\n================================"
-        )
-
-        print(
-            "ANSWER"
-        )
-
-        print(
-            "================================"
-        )
-
-        print(answer)
-
-
-        print(
-            "\n================================"
-        )
-
-        print(
-            "SOURCES"
-        )
-
-        print(
-            "================================"
-        )
-
-
-        print_direct_source(
-            quarter,
-            direct_page
-        )
-
-
-        return
+            return
 
 
     # --------------------------------------------------------
-    # RAG FALLBACK
+    # Local Ollama + ChromaDB RAG
     # --------------------------------------------------------
 
     results = retrieve_documents(
@@ -839,74 +776,134 @@ def main():
         quarter
     )
 
+    if results:
 
-    documents = results.get(
-        "documents",
-        [[]]
-    )[0]
+        documents = results.get(
+            "documents",
+            [[]]
+        )[0]
+
+        metadatas = results.get(
+            "metadatas",
+            [[]]
+        )[0]
+
+        if documents:
+
+            context_parts = []
+
+            for document, metadata in zip(
+                documents,
+                metadatas
+            ):
+
+                context_parts.append(
+                    f"""
+SOURCE: {metadata.get('source')}
+PAGE: {metadata.get('page')}
+QUARTER: {metadata.get('quarter')}
+
+DOCUMENT:
+{document}
+"""
+                )
+
+            context = "\n".join(
+                context_parts
+            )
+
+            answer = (
+                generate_ollama_answer(
+                    question,
+                    context
+                )
+            )
+
+            if answer:
+
+                print(
+                    "\n================================"
+                )
+
+                print("ANSWER")
+
+                print(
+                    "================================"
+                )
+
+                print(answer)
+
+                print(
+                    "\n================================"
+                )
+
+                print("SOURCES")
+
+                print(
+                    "================================"
+                )
+
+                seen = set()
+
+                for metadata in metadatas:
+
+                    source = metadata.get(
+                        "source"
+                    )
+
+                    page = metadata.get(
+                        "page"
+                    )
+
+                    key = (
+                        source,
+                        page
+                    )
+
+                    if key not in seen:
+
+                        print(
+                            f"- {source} "
+                            f"— Page {page}"
+                        )
+
+                        seen.add(key)
+
+                return
 
 
-    if not documents:
-
-        print(
-            "\n================================"
-        )
-
-        print(
-            "ANSWER"
-        )
-
-        print(
-            "================================"
-        )
-
-        print(
-            "I could not find this information "
-            "in the provided documents."
-        )
-
-        print_rag_sources([])
-
-        return
-
-
-    context, metadatas = (
-        build_context(
-            results
-        )
-    )
-
-
-    answer = generate_rag_answer(
-        question,
-        quarter,
-        metric,
-        context
-    )
-
+    # --------------------------------------------------------
+    # Final safe response
+    # --------------------------------------------------------
 
     print(
         "\n================================"
     )
 
-    print(
-        "ANSWER"
-    )
+    print("ANSWER")
 
     print(
         "================================"
     )
 
-    print(answer)
+    print(
+        "I could not find this information "
+        "in the provided documents."
+    )
 
+    print(
+        "\n================================"
+    )
 
-    print_rag_sources(
-        metadatas
+    print("SOURCES")
+
+    print(
+        "================================"
     )
 
 
 # ============================================================
-# RUN PROGRAM
+# RUN
 # ============================================================
 
 if __name__ == "__main__":
