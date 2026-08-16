@@ -48,7 +48,6 @@ def detect_quarter(question):
     )
 
     if match:
-
         return (
             "Q"
             + match.group(1)
@@ -62,15 +61,17 @@ def detect_quarter(question):
     )
 
     if match:
-
         return (
             "Q"
             + match.group(1)
             + " FY26"
         )
 
-    return None
+    # Latest quarter = Q4 FY26
+    if "LATEST QUARTER" in question_upper or "LATEST" in question_upper:
+        return "Q4 FY26"
 
+    return None
 
 # ============================================================
 # DETECT METRIC
@@ -714,7 +715,64 @@ def main():
 
         return
 
+# --------------------------------------------------------
+    # MULTI-QUARTER FINANCIAL COMPARISON
+    # --------------------------------------------------------
 
+    if (
+        quarter is None
+        and metric in [
+            "revenue",
+            "operating profit",
+            "operating margin",
+            "net profit"
+        ]
+        and (
+            "across the four quarters" in question.lower()
+            or "four quarters" in question.lower()
+            or "trend" in question.lower()
+        )
+    ):
+
+        print(
+            "\n================================"
+        )
+
+        print(
+            "ANSWER"
+        )
+
+        print(
+            "================================"
+        )
+
+        for q in [
+            "Q1 FY26",
+            "Q2 FY26",
+            "Q3 FY26",
+            "Q4 FY26"
+        ]:
+
+            value, page = (
+                get_direct_financial_answer(
+                    q,
+                    metric
+                )
+            )
+
+            if value is not None:
+
+                print(
+                    f"{q}: {format_direct_answer(metric, value)}"
+                )
+
+                print(
+                    f"Source: Infosys_"
+                    f"{q.replace(' ', '_')}.pdf"
+                    f" — Page {page}"
+                )
+
+        return
     # --------------------------------------------------------
     # EXACT FINANCIAL ANSWER
     # --------------------------------------------------------

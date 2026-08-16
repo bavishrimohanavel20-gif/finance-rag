@@ -20,7 +20,10 @@ client = chromadb.PersistentClient(
 )
 
 
+# -----------------------------------------
 # Delete old collection
+# -----------------------------------------
+
 try:
     client.delete_collection(
         name="infosys_financial_reports"
@@ -32,7 +35,10 @@ except Exception:
     print("No old collection found.")
 
 
+# -----------------------------------------
 # Create fresh collection
+# -----------------------------------------
+
 collection = client.create_collection(
     name="infosys_financial_reports"
 )
@@ -80,7 +86,6 @@ for pdf_file in sorted(
         pdf_file.name
     )
 
-
     for page_number, page in enumerate(
         reader.pages,
         start=1
@@ -91,8 +96,6 @@ for pdf_file in sorted(
         if not text:
             continue
 
-
-        # Keep the COMPLETE page together
         enriched_text = f"""
 SOURCE: {pdf_file.name}
 QUARTER: {quarter}
@@ -103,14 +106,12 @@ DOCUMENT CONTENT:
 {text}
 """.strip()
 
-
         all_pages.append({
             "text": enriched_text,
             "source": pdf_file.name,
             "quarter": quarter,
             "page": page_number
         })
-
 
     print(
         f"Pages processed: {len(reader.pages)}"
@@ -123,7 +124,7 @@ print("================================")
 
 
 # -----------------------------------------
-# Create embeddings
+# Create Ollama embeddings
 # -----------------------------------------
 
 for index, page_data in enumerate(
@@ -135,15 +136,12 @@ for index, page_data in enumerate(
         end="\r"
     )
 
-
     response = ollama.embed(
         model=EMBEDDING_MODEL,
         input=page_data["text"]
     )
 
-
     embedding = response.embeddings[0]
-
 
     collection.add(
 
@@ -173,5 +171,6 @@ print("\n")
 
 print("================================")
 print("ChromaDB indexing completed!")
+print("Embedding model:", EMBEDDING_MODEL)
 print("Total documents:", collection.count())
 print("================================")
